@@ -406,6 +406,29 @@ function cmdStamp(seed) {
   });
 }
 
+function cmdReroll() {
+  const cfg = getConfig();
+  if (!cfg) return JSON.stringify({ error: "No Claude config found" });
+  const slot = getSeedSlot(cfg.data);
+  const seed = slot.format === "hex" ? randomHex64() : randomUUID();
+  const buddy = deriveBuddy(seed);
+  return JSON.stringify({ seed, format: slot.format, buddy, card: formatCard(buddy) });
+}
+
+function cmdRestore(backupPath) {
+  if (!backupPath || !existsSync(backupPath)) return JSON.stringify({ error: "Backup file not found" });
+  const cfg = getConfig();
+  if (!cfg) return JSON.stringify({ error: "No Claude config found" });
+  let data;
+  try { data = JSON.parse(readFileSync(backupPath, "utf-8")); } catch {
+    return JSON.stringify({ error: "Backup file is not valid JSON" });
+  }
+  copyFileSync(backupPath, cfg.path);
+  const slot = getSeedSlot(data);
+  const buddy = deriveBuddy(slot.value);
+  return JSON.stringify({ restored: true, from: backupPath, config: cfg.path, buddy, card: formatCard(buddy) });
+}
+
 // --- Main ---
 
 maybeReexecUnderBun();
@@ -422,7 +445,14 @@ switch (cmd) {
     if (!args[0]) { console.error("Usage: stamp <seed>"); process.exit(1); }
     console.log(cmdStamp(args[0]));
     break;
+  case "reroll":
+    console.log(cmdReroll());
+    break;
+  case "restore":
+    if (!args[0]) { console.error("Usage: restore <backup-path>"); process.exit(1); }
+    console.log(cmdRestore(args[0]));
+    break;
   default:
-    console.error("Commands: inspect | hunt [filters] | stamp <seed>");
+    console.error("Commands: inspect | hunt [filters] | stamp <seed> | reroll | restore <backup>");
     process.exit(1);
 }
