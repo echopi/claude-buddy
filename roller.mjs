@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // Compact Claude Code buddy roller - replicates /buddy derivation algorithm.
-// Uses FNV-1a hash (matching Claude Code's node runtime). Outputs JSON to stdout, progress to stderr.
+// Uses FNV-1a for npm-installed Claude Code, wyhash (via Bun) for compiled binary.
+// Outputs JSON to stdout, progress to stderr.
 
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "fs";
+import { copyFileSync, existsSync, readFileSync, writeFileSync, realpathSync, statSync } from "fs";
+import { execSync, execFileSync } from "child_process";
 import { join } from "path";
-import { homedir } from "os";
+import { homedir, platform } from "os";
 
 const SALT = "friend-2026-401";
 
@@ -68,6 +70,88 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const HEX64_RE = /^[0-9a-f]{64}$/i;
 const HEX = "0123456789abcdef";
 
+// --- Claude Code runtime detection + hash selection ---
+
+const IS_BUN = typeof Bun !== "undefined" && typeof Bun.hash === "function";
+
+function findClaudeBinary() {
+  if (process.env.CLAUDE_BINARY) {
+    const p = process.env.CLAUDE_BINARY;
+    if (existsSync(p)) return realpathSync(p);
+  }
+  const IS_WIN = platform() === "win32";
+  const IS_MAC = platform() === "darwin";
+  const EXEC_OPTS = { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] };
+  try {
+    const raw = execSync(IS_WIN ? "where claude" : "which claude", EXEC_OPTS).trim().split(/\r?\n/)[0].trim();
+    if (raw && existsSync(raw)) {
+      const resolved = realpathSync(raw);
+      try { if (statSync(resolved).size >= 1_000_000) return resolved; } catch {}
+      const ccPkg = join("@anthropic-ai", "claude-code");
+      const idx = resolved.indexOf(ccPkg);
+      if (idx !== -1) {
+        const bin = join(resolved.substring(0, idx + ccPkg.length), IS_WIN ? "claude.exe" : "claude");
+        try { if (existsSync(bin) && statSync(bin).size >= 1_000_000) return bin; } catch {}
+      }
+      return resolved;
+    }
+  } catch {}
+  const home = homedir();
+  const candidates = IS_MAC
+    ? [join(home, ".local", "bin", "claude"), join(home, ".claude", "local", "claude"), "/usr/local/bin/claude", "/opt/homebrew/bin/claude"]
+    : [join(home, ".local", "bin", "claude"), "/usr/local/bin/claude", "/usr/bin/claude"];
+  for (const c of candidates) {
+    if (existsSync(c)) return realpathSync(c);
+  }
+  return null;
+}
+
+function findBun() {
+  const EXEC_OPTS = { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] };
+  try {
+    const p = execSync(platform() === "win32" ? "where bun" : "which bun", EXEC_OPTS).trim().split(/\r?\n/)[0].trim();
+    if (p && existsSync(p)) return p;
+  } catch {}
+  const home = homedir();
+  for (const c of [join(home, ".bun", "bin", "bun"), "/usr/local/bin/bun"]) {
+    if (existsSync(c)) return c;
+  }
+  return null;
+}
+
+let _detectCache;
+function detectHashEngine() {
+  if (_detectCache !== undefined) return _detectCache;
+  const bin = findClaudeBinary();
+  const isNodeBin = bin && (bin.endsWith(".js") || bin.endsWith(".mjs"));
+  _detectCache = { binary: bin, useWyhash: bin ? !isNodeBin : false };
+  return _detectCache;
+}
+
+// If wyhash needed but running under Node, re-exec under Bun
+function maybeReexecUnderBun() {
+  if (IS_BUN || !detectHashEngine().useWyhash) return;
+  const bunPath = findBun();
+  if (!bunPath) {
+    process.stderr.write("Warning: compiled Claude Code detected but Bun not found, falling back to FNV-1a\n");
+    _detectCache.useWyhash = false;
+    return;
+  }
+  const result = execFileSync(bunPath, process.argv.slice(1), {
+    encoding: "utf-8", stdio: ["pipe", "pipe", process.stderr],
+  });
+  process.stdout.write(result);
+  process.exit(0);
+}
+
+function wyhash32(input) {
+  return Number(BigInt.asUintN(32, Bun.hash(input)));
+}
+
+function hashInput(input) {
+  return (IS_BUN && detectHashEngine().useWyhash) ? wyhash32(input) : fnv1a(input);
+}
+
 // --- Core algorithm (must match Claude Code's derivation) ---
 
 function splitmix32(seed) {
@@ -117,7 +201,7 @@ function rollStats(rng, rarity) {
 }
 
 function deriveBuddy(seed) {
-  const rng = splitmix32(fnv1a(seed + SALT));
+  const rng = splitmix32(hashInput(seed + SALT));
   const rarity = rollRarity(rng);
   const species = pick(rng, SPECIES);
   const eye = pick(rng, EYES);
@@ -210,6 +294,8 @@ function cmdInspect() {
     seedSource: slot.source,
     seedValue: slot.value,
     seedFormat: slot.format,
+    hashEngine: _detectCache.useWyhash ? "wyhash (compiled)" : "fnv1a (npm)",
+    claudeBinary: _detectCache.binary || "not found",
     companion: cfg.data.companion || null,
     buddy,
     card: formatCard(buddy),
@@ -254,7 +340,7 @@ function cmdHunt(args) {
     }
 
     const seed = gen();
-    const rng = splitmix32(fnv1a(seed + SALT));
+    const rng = splitmix32(hashInput(seed + SALT));
 
     const rarity = rollRarity(rng);
     if (f.rarity && rarity !== f.rarity) continue;
@@ -322,6 +408,7 @@ function cmdStamp(seed) {
 
 // --- Main ---
 
+maybeReexecUnderBun();
 const [cmd, ...args] = process.argv.slice(2);
 
 switch (cmd) {
