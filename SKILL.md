@@ -1,6 +1,6 @@
 ---
 name: claude-buddy
-description: "Inspect, hunt, and stamp Claude Code /buddy pets. Triggers: \"buddy\", \"pet\", \"reroll buddy\", \"hunt buddy\", \"I want a dragon\", \"buddy roller\", \"\u770b\u770b\u5ba0\u7269\", \"\u6362\u4e00\u4e2a\u5ba0\u7269\", \"\u627e\u4e00\u4e2a\u9f99\""
+description: "Inspect, hunt, stamp, and manage Claude Code /buddy pets with profiles. Triggers: \"buddy\", \"pet\", \"reroll buddy\", \"hunt buddy\", \"I want a dragon\", \"buddy roller\", \"switch buddy\", \"\u770b\u770b\u5ba0\u7269\", \"\u6362\u4e00\u4e2a\u5ba0\u7269\", \"\u627e\u4e00\u4e2a\u9f99\", \"\u5207\u6362\u5ba0\u7269\""
 ---
 
 # Buddy Roller
@@ -101,6 +101,44 @@ node "$SKILL_DIR/roller.mjs" restore <backup-path>
    ```
 2. Show the most recent backup and confirm before restoring.
 3. After restoring, display the restored buddy card.
+
+### Save current buddy to profile
+
+Triggers: "save buddy", "保存宠物"
+
+```bash
+node "$SKILL_DIR/roller.mjs" save <name>
+```
+
+Saves current seed + companion (name/personality) to `~/.claude/buddy-profiles.json`. The user provides a name for the profile.
+
+### Switch to a saved profile
+
+Triggers: "switch buddy", "切换宠物", "用之前那个"
+
+**Must confirm with the user before running!** This modifies `~/.claude.json`.
+
+```bash
+node "$SKILL_DIR/roller.mjs" switch <name>
+```
+
+Restores the saved seed + companion info. Unlike stamp, switch preserves the companion's name and personality. After switching, tell the user to restart Claude Code.
+
+### List saved profiles
+
+Triggers: "show profiles", "我的宠物们", "buddy list"
+
+```bash
+node "$SKILL_DIR/roller.mjs" profiles
+```
+
+Display each profile's card with its name.
+
+### Delete a profile
+
+```bash
+node "$SKILL_DIR/roller.mjs" delete-profile <name>
+```
 
 ## Probability Reference
 

@@ -3,7 +3,7 @@
 // Uses FNV-1a for npm-installed Claude Code, wyhash (via Bun) for compiled binary.
 // Outputs JSON to stdout, progress to stderr.
 
-import { copyFileSync, existsSync, readFileSync, writeFileSync, realpathSync, statSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync, statSync } from "fs";
 import { execSync, execFileSync } from "child_process";
 import { join } from "path";
 import { homedir, platform } from "os";
@@ -282,6 +282,19 @@ function getSeedSlot(data) {
   return { source: "anon", value: "anon", format: "uuid" };
 }
 
+// --- Profiles ---
+
+const PROFILES_PATH = join(homedir(), ".claude", "buddy-profiles.json");
+
+function loadProfiles() {
+  try { return JSON.parse(readFileSync(PROFILES_PATH, "utf-8")); } catch { return {}; }
+}
+
+function saveProfiles(profiles) {
+  mkdirSync(join(homedir(), ".claude"), { recursive: true });
+  writeFileSync(PROFILES_PATH, JSON.stringify(profiles, null, 2) + "\n");
+}
+
 // --- Commands ---
 
 function cmdInspect() {
@@ -389,8 +402,10 @@ function cmdStamp(seed) {
   const backup = `${cfg.path}.backup-${Date.now()}`;
   copyFileSync(cfg.path, backup);
 
-  if (slot.source === "oauthAccount.accountUuid") cfg.data.oauthAccount.accountUuid = seed;
-  else cfg.data.userID = seed;
+  if (slot.source === "oauthAccount.accountUuid") {
+    if (!cfg.data.oauthAccount) cfg.data.oauthAccount = {};
+    cfg.data.oauthAccount.accountUuid = seed;
+  } else cfg.data.userID = seed;
 
   delete cfg.data.companion;
   writeFileSync(cfg.path, JSON.stringify(cfg.data, null, 2) + "\n");
@@ -429,6 +444,68 @@ function cmdRestore(backupPath) {
   return JSON.stringify({ restored: true, from: backupPath, config: cfg.path, buddy, card: formatCard(buddy) });
 }
 
+function cmdSave(name) {
+  if (!name) return JSON.stringify({ error: "Profile name is required" });
+  const cfg = getConfig();
+  if (!cfg) return JSON.stringify({ error: "No Claude config found" });
+  const slot = getSeedSlot(cfg.data);
+  const buddy = deriveBuddy(slot.value);
+  const profiles = loadProfiles();
+  profiles[name] = {
+    seed: slot.value,
+    seedSource: slot.source,
+    companion: cfg.data.companion || null,
+    savedAt: Date.now(),
+  };
+  saveProfiles(profiles);
+  return JSON.stringify({ saved: true, name, seed: slot.value, buddy, card: formatCard(buddy) });
+}
+
+function cmdSwitch(name) {
+  if (!name) return JSON.stringify({ error: "Profile name is required" });
+  const profiles = loadProfiles();
+  const profile = profiles[name];
+  if (!profile) return JSON.stringify({ error: `Profile "${name}" not found`, available: Object.keys(profiles) });
+  const cfg = getConfig();
+  if (!cfg) return JSON.stringify({ error: "No Claude config found" });
+
+  const backup = `${cfg.path}.backup-${Date.now()}`;
+  copyFileSync(cfg.path, backup);
+
+  if (profile.seedSource === "oauthAccount.accountUuid") {
+    if (!cfg.data.oauthAccount) cfg.data.oauthAccount = {};
+    cfg.data.oauthAccount.accountUuid = profile.seed;
+  } else cfg.data.userID = profile.seed;
+
+  if (profile.companion) cfg.data.companion = profile.companion;
+  else delete cfg.data.companion;
+
+  writeFileSync(cfg.path, JSON.stringify(cfg.data, null, 2) + "\n");
+  const buddy = deriveBuddy(profile.seed);
+  return JSON.stringify({
+    switched: true, name, backup, seed: profile.seed,
+    companion: profile.companion, buddy, card: formatCard(buddy),
+  });
+}
+
+function cmdProfiles() {
+  const profiles = loadProfiles();
+  const entries = Object.entries(profiles).map(([name, p]) => {
+    const buddy = deriveBuddy(p.seed);
+    return { name, seed: p.seed, companion: p.companion, buddy, card: formatCard(buddy) };
+  });
+  return JSON.stringify({ profiles: entries });
+}
+
+function cmdDeleteProfile(name) {
+  if (!name) return JSON.stringify({ error: "Profile name is required" });
+  const profiles = loadProfiles();
+  if (!profiles[name]) return JSON.stringify({ error: `Profile "${name}" not found` });
+  delete profiles[name];
+  saveProfiles(profiles);
+  return JSON.stringify({ deleted: true, name, remaining: Object.keys(profiles) });
+}
+
 // --- Main ---
 
 maybeReexecUnderBun();
@@ -452,7 +529,22 @@ switch (cmd) {
     if (!args[0]) { console.error("Usage: restore <backup-path>"); process.exit(1); }
     console.log(cmdRestore(args[0]));
     break;
+  case "save":
+    if (!args[0]) { console.error("Usage: save <name>"); process.exit(1); }
+    console.log(cmdSave(args[0]));
+    break;
+  case "switch":
+    if (!args[0]) { console.error("Usage: switch <name>"); process.exit(1); }
+    console.log(cmdSwitch(args[0]));
+    break;
+  case "profiles":
+    console.log(cmdProfiles());
+    break;
+  case "delete-profile":
+    if (!args[0]) { console.error("Usage: delete-profile <name>"); process.exit(1); }
+    console.log(cmdDeleteProfile(args[0]));
+    break;
   default:
-    console.error("Commands: inspect | hunt [filters] | stamp <seed> | reroll | restore <backup>");
+    console.error("Commands: inspect | hunt | stamp | reroll | restore | save | switch | profiles | delete-profile");
     process.exit(1);
 }
